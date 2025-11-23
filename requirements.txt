@@ -1,9 +1,11 @@
 fastapi
 uvicorn[standard]
-python-multipart
 google-generativeai
 requests
-pandas
-sentence-transformers
-faiss-cpu
-pydantic
+python-dotenv
+python-multipartfastapi
+uvicorn[standard]
+google-generativeai
+requests
+python-dotenv
+python-multipart
