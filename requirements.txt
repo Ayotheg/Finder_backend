@@ -1,11 +1,6 @@
-fastapi
-uvicorn[standard]
-google-generativeai
-requests
-python-dotenv
-python-multipartfastapi
-uvicorn[standard]
-google-generativeai
-requests
-python-dotenv
-python-multipart
+Flask==3.0.0
+Flask-CORS==4.0.0
+requests==2.31.0
+Werkzeug==3.0.1
+python-dotenv==1.0.0
+gunicorn==21.2.0

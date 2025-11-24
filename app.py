@@ -196,9 +196,6 @@ def analyze_image():
 
 
 if __name__ == '__main__':
-    print("🚀 Finder AI Backend starting...")
-    print(f"📡 API endpoint: http://localhost:5000/api/analyze")
-    print(f"🔍 Using Roboflow workspace: {ROBOFLOW_CONFIG['workspace']}")
-    print(f"🌐 Frontend: http://localhost:5000")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Use environment variable for port, default to 5000 for local dev
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
