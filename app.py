@@ -58,22 +58,20 @@ def filter_detections_by_prompt(predictions, prompt):
     return filtered if filtered else predictions  # Return all if no matches
 
 
-FRONTEND_URL = os.getenv("FRONTEND_URL")  # e.g. https://your-frontend.example
-
+FRONTEND_URL = os.getenv("FRONTEND_URL") 
 @app.route('/')
 def index():
-    """Redirect root to external frontend"""
-    if not FRONTEND_URL:
-        return jsonify({'error': 'FRONTEND_URL not configured'}), 500
-    return redirect(FRONTEND_URL, code=302)
+    """API info endpoint"""
+    return jsonify({
+        'name': 'Finder AI Backend',
+        'version': '1.0',
+        'endpoints': {
+            'health': '/api/health',
+            'analyze': '/api/analyze'
+        }
+    })
 
-@app.route('/<path:path>')
-def redirect_to_frontend(path):
-    """Redirect any path to the external frontend, preserving path"""
-    if not FRONTEND_URL:
-        return jsonify({'error': 'FRONTEND_URL not configured'}), 500
-    target = urljoin(FRONTEND_URL.rstrip('/') + '/', path)
-    return redirect(target, code=302)
+# Remove the catch-all /<path:path> route entirely
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
