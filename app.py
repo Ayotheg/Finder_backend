@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import requests
@@ -7,6 +7,8 @@ import os
 import json
 from pathlib import Path
 from dotenv import load_dotenv
+from urllib.parse import urljoin
+import traceback
 
 
 load_dotenv()
@@ -56,17 +58,22 @@ def filter_detections_by_prompt(predictions, prompt):
     return filtered if filtered else predictions  # Return all if no matches
 
 
+FRONTEND_URL = os.getenv("FRONTEND_URL")  # e.g. https://your-frontend.example
+
 @app.route('/')
 def index():
-    """Serve the main HTML file"""
-    return send_from_directory('public', 'index.html')
-
+    """Redirect root to external frontend"""
+    if not FRONTEND_URL:
+        return jsonify({'error': 'FRONTEND_URL not configured'}), 500
+    return redirect(FRONTEND_URL, code=302)
 
 @app.route('/<path:path>')
-def serve_static(path):
-    """Serve static files"""
-    return send_from_directory('public', path)
-
+def redirect_to_frontend(path):
+    """Redirect any path to the external frontend, preserving path"""
+    if not FRONTEND_URL:
+        return jsonify({'error': 'FRONTEND_URL not configured'}), 500
+    target = urljoin(FRONTEND_URL.rstrip('/') + '/', path)
+    return redirect(target, code=302)
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -184,13 +191,15 @@ def analyze_image():
             'error': 'Failed to process image',
             'details': str(e)
         }), 500
-    
+
     finally:
         # Clean up uploaded file
         if uploaded_file_path and os.path.exists(uploaded_file_path):
             try:
                 os.remove(uploaded_file_path)
                 print(f"Cleaned up temporary file: {uploaded_file_path}")
+            except Exception as e:
+                print(f"Failed to delete temporary file: {e}")
             except Exception as e:
                 print(f"Failed to delete temporary file: {e}")
 
