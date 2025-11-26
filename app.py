@@ -59,6 +59,7 @@ def filter_detections_by_prompt(predictions, prompt):
 
 
 FRONTEND_URL = os.getenv("FRONTEND_URL") 
+
 @app.route('/')
 def index():
     """API info endpoint"""
@@ -71,7 +72,6 @@ def index():
         }
     })
 
-# Remove the catch-all /<path:path> route entirely
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -150,9 +150,32 @@ def analyze_image():
         if not outputs:
             return jsonify({'error': 'No outputs from Roboflow'}), 500
         
+        # Get predictions
         predictions_data = outputs[0].get('predictions', {})
         all_predictions = predictions_data.get('predictions', [])
-        annotated_image_base64 = outputs[0].get('visualization', {}).get('value', '')
+        
+        # Get visualization - handle multiple formats
+        annotated_image_base64 = None
+        
+        # Try getting from visualization field
+        if 'visualization' in outputs[0]:
+            viz = outputs[0]['visualization']
+            if isinstance(viz, dict):
+                annotated_image_base64 = viz.get('value', '')
+            elif isinstance(viz, str):
+                annotated_image_base64 = viz
+        
+        # If no visualization, try getting annotated_image directly
+        if not annotated_image_base64 and 'annotated_image' in outputs[0]:
+            annotated_image_base64 = outputs[0]['annotated_image']
+        
+        # Clean up the base64 string if it has a data URI prefix
+        if annotated_image_base64 and annotated_image_base64.startswith('data:'):
+            annotated_image_base64 = annotated_image_base64.split(',', 1)[1]
+        
+        print(f"Visualization found: {bool(annotated_image_base64)}")
+        if annotated_image_base64:
+            print(f"Visualization length: {len(annotated_image_base64)} characters")
         
         # Filter detections based on prompt
         filtered_detections = filter_detections_by_prompt(all_predictions, prompt)
@@ -183,7 +206,6 @@ def analyze_image():
     
     except Exception as e:
         print(f"Error processing image: {str(e)}")
-        import traceback
         traceback.print_exc()
         return jsonify({
             'error': 'Failed to process image',
@@ -196,8 +218,6 @@ def analyze_image():
             try:
                 os.remove(uploaded_file_path)
                 print(f"Cleaned up temporary file: {uploaded_file_path}")
-            except Exception as e:
-                print(f"Failed to delete temporary file: {e}")
             except Exception as e:
                 print(f"Failed to delete temporary file: {e}")
 
