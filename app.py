@@ -238,6 +238,13 @@ def analyze_image():
 
         roboflow_data = roboflow_response.json()
         print("✓ Roboflow response received successfully")
+        
+        # DEBUG: Print full response to see structure
+        import json
+        print("\n" + "="*50)
+        print("FULL ROBOFLOW RESPONSE:")
+        print(json.dumps(roboflow_data, indent=2))
+        print("="*50 + "\n")
 
         # Extract predictions and visualization
         outputs = roboflow_data.get('outputs', [])
@@ -245,10 +252,31 @@ def analyze_image():
             print("❌ No outputs in Roboflow response")
             return jsonify({'error': 'No outputs from Roboflow'}), 500
 
-        # Get predictions
-        predictions_data = outputs[0].get('predictions', {})
-        all_predictions = predictions_data.get('predictions', [])
+        print(f"📦 Number of outputs: {len(outputs)}")
+        print(f"📦 Output keys: {outputs[0].keys() if outputs else 'None'}")
+
+        # Get predictions - handle different response structures
+        all_predictions = []
+        
+        # Try different ways to get predictions
+        if 'predictions' in outputs[0]:
+            predictions_data = outputs[0]['predictions']
+            
+            # Check if it's nested
+            if isinstance(predictions_data, dict):
+                all_predictions = predictions_data.get('predictions', [])
+                print(f"📊 Predictions found in nested structure")
+            elif isinstance(predictions_data, list):
+                all_predictions = predictions_data
+                print(f"📊 Predictions found in list structure")
+        
         print(f"📊 Total detections from Roboflow: {len(all_predictions)}")
+        
+        if all_predictions:
+            print(f"📊 Sample prediction: {all_predictions[0]}")
+        else:
+            print("⚠️ WARNING: No predictions in response!")
+            print(f"⚠️ Output structure: {outputs[0]}")
 
         # Get visualization
         annotated_image_base64 = None
