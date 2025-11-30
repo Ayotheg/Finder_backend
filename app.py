@@ -42,17 +42,35 @@ def allowed_file(filename):
 
 
 def filter_detections_by_prompt(predictions, prompt):
-    """Filter detections based on user prompt"""
+    """Filter detections based on user prompt with improved fuzzy matching"""
     if not prompt:
         return predictions
     
-    prompt_lower = prompt.lower()
+    prompt_lower = prompt.lower().strip()
     filtered = []
+    
+    # Split prompt into keywords
+    prompt_keywords = prompt_lower.split()
     
     for pred in predictions:
         class_name = pred.get('class', '').lower()
-        # Check if prompt mentions this class or vice versa
-        if class_name in prompt_lower or any(word in class_name for word in prompt_lower.split()):
+        
+        # Check various matching strategies
+        match = False
+        
+        # Exact match
+        if class_name == prompt_lower:
+            match = True
+        
+        # Class name contains any prompt keyword
+        elif any(keyword in class_name for keyword in prompt_keywords):
+            match = True
+        
+        # Any prompt keyword contains the class name (e.g., "brush" matches "toothbrush")
+        elif any(class_name in keyword for keyword in prompt_keywords):
+            match = True
+        
+        if match:
             filtered.append(pred)
     
     return filtered if filtered else predictions  # Return all if no matches
@@ -92,33 +110,33 @@ def analyze_image():
         # Check if image file is present
         if 'image' not in request.files:
             return jsonify({'error': 'No image file provided'}), 400
-        
+
         file = request.files['image']
-        
+
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
-        
+
         if not allowed_file(file.filename):
             return jsonify({'error': 'Invalid file type. Allowed: PNG, JPG, JPEG, GIF'}), 400
-        
+
         # Get prompt from form data
         prompt = request.form.get('prompt', '').strip()
-        
+
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         uploaded_file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(uploaded_file_path)
-        
+
         print(f"Processing image: {filename}")
         print(f"User prompt: '{prompt}'")
-        
+
         # Read and encode image as base64
         with open(uploaded_file_path, 'rb') as image_file:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-        
+
         # Prepare Roboflow API request
         roboflow_url = f"{ROBOFLOW_CONFIG['api_url']}/{ROBOFLOW_CONFIG['workspace']}/workflows/{ROBOFLOW_CONFIG['workflow_id']}"
-        
+
         payload = {
             'api_key': ROBOFLOW_CONFIG['api_key'],
             'inputs': {
@@ -128,7 +146,7 @@ def analyze_image():
                 }
             }
         }
-        
+
         # Call Roboflow API
         print("Calling Roboflow API...")
         roboflow_response = requests.post(
@@ -136,27 +154,27 @@ def analyze_image():
             json=payload,
             headers={'Content-Type': 'application/json'}
         )
-        
+
         if not roboflow_response.ok:
             error_msg = f"Roboflow API error: {roboflow_response.status_code}"
             print(error_msg)
             return jsonify({'error': error_msg, 'details': roboflow_response.text}), 500
-        
+
         roboflow_data = roboflow_response.json()
         print("Roboflow response received successfully")
-        
+
         # Extract predictions and visualization
         outputs = roboflow_data.get('outputs', [])
         if not outputs:
             return jsonify({'error': 'No outputs from Roboflow'}), 500
-        
+
         # Get predictions
         predictions_data = outputs[0].get('predictions', {})
         all_predictions = predictions_data.get('predictions', [])
-        
+
         # Get visualization - handle multiple formats
         annotated_image_base64 = None
-        
+
         # Try getting from visualization field
         if 'visualization' in outputs[0]:
             viz = outputs[0]['visualization']
@@ -164,53 +182,63 @@ def analyze_image():
                 annotated_image_base64 = viz.get('value', '')
             elif isinstance(viz, str):
                 annotated_image_base64 = viz
-        
+
         # If no visualization, try getting annotated_image directly
         if not annotated_image_base64 and 'annotated_image' in outputs[0]:
             annotated_image_base64 = outputs[0]['annotated_image']
-        
+
         # Clean up the base64 string if it has a data URI prefix
         if annotated_image_base64 and annotated_image_base64.startswith('data:'):
             annotated_image_base64 = annotated_image_base64.split(',', 1)[1]
-        
+
         print(f"Visualization found: {bool(annotated_image_base64)}")
         if annotated_image_base64:
             print(f"Visualization length: {len(annotated_image_base64)} characters")
-        
+
         # Filter detections based on prompt
         filtered_detections = filter_detections_by_prompt(all_predictions, prompt)
-        
-        # Prepare response
-        response_data = {
-            'success': True,
-            'prompt': prompt,
-            'annotated_image': annotated_image_base64,
-            'detections': [
-                {
-                    'class': pred.get('class'),
-                    'confidence': pred.get('confidence'),
-                    'x': pred.get('x'),
-                    'y': pred.get('y'),
-                    'width': pred.get('width'),
-                    'height': pred.get('height')
-                }
-                for pred in filtered_detections
-            ],
-            'total_detections': len(all_predictions),
-            'filtered_detections': len(filtered_detections)
-        }
-        
-        print(f"Total detections: {len(all_predictions)}, Filtered: {len(filtered_detections)}")
-        
+
+        # Prepare response with helpful messages
+        if not filtered_detections and prompt:
+            # No matches found for the prompt
+            detected_classes = list(set(p.get('class', 'unknown') for p in all_predictions))
+            response_data = {
+                'success': True,
+                'prompt': prompt,
+                'annotated_image': annotated_image_base64,
+                'detections': [],
+                'total_detections': len(all_predictions),
+                'filtered_detections': 0,
+                'message': f"No '{prompt}' found. Detected: {', '.join(detected_classes)}"
+            }
+        else:
+            response_data = {
+                'success': True,
+                'prompt': prompt,
+                'annotated_image': annotated_image_base64,
+                'detections': [
+                    {
+                        'class': pred.get('class'),
+                        'confidence': pred.get('confidence'),
+                        'x': pred.get('x'),
+                        'y': pred.get('y'),
+                        'width': pred.get('width'),
+                        'height': pred.get('height')
+                    }
+                    for pred in filtered_detections
+                ],
+                'total_detections': len(all_predictions),
+                'filtered_detections': len(filtered_detections),
+                'message': f"Found {len(filtered_detections)} {prompt}(s)" if prompt else f"Found {len(filtered_detections)} item(s)"
+            }
+
+        # Return the response from the try block
         return jsonify(response_data)
-    
+
     except Exception as e:
-        print(f"Error processing image: {str(e)}")
+        # Log and return an error response
         traceback.print_exc()
-        return jsonify({
-            'error': 'Failed to process image',
-            'details': str(e)
-        }), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
     finally:
         # Clean up uploaded file
