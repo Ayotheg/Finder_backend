@@ -258,8 +258,15 @@ def analyze_image():
         # Get predictions - handle different response structures
         all_predictions = []
         
-        # Try different ways to get predictions
-        if 'predictions' in outputs[0]:
+        # Method 1: Check for model_1 (your workflow structure)
+        if 'model_1' in outputs[0]:
+            model_output = outputs[0]['model_1']
+            if isinstance(model_output, dict) and 'predictions' in model_output:
+                all_predictions = model_output['predictions']
+                print(f"📊 Predictions found in model_1")
+        
+        # Method 2: Check for direct predictions key
+        elif 'predictions' in outputs[0]:
             predictions_data = outputs[0]['predictions']
             
             # Check if it's nested
@@ -270,26 +277,70 @@ def analyze_image():
                 all_predictions = predictions_data
                 print(f"📊 Predictions found in list structure")
         
+        # Method 3: Check for object_detection_model output
+        elif 'object_detection_model' in outputs[0]:
+            obj_detection = outputs[0]['object_detection_model']
+            if isinstance(obj_detection, dict):
+                all_predictions = obj_detection.get('predictions', [])
+                print(f"📊 Predictions found in object_detection_model")
+        
+        # Method 4: Check for any key containing 'model' or 'prediction'
+        else:
+            for key in outputs[0].keys():
+                if 'model' in key.lower() or 'prediction' in key.lower():
+                    pred_data = outputs[0][key]
+                    if isinstance(pred_data, dict) and 'predictions' in pred_data:
+                        all_predictions = pred_data['predictions']
+                        print(f"📊 Predictions found in key: {key}")
+                        break
+                    elif isinstance(pred_data, list):
+                        all_predictions = pred_data
+                        print(f"📊 Predictions found in key: {key}")
+                        break
+        
         print(f"📊 Total detections from Roboflow: {len(all_predictions)}")
         
         if all_predictions:
             print(f"📊 Sample prediction: {all_predictions[0]}")
         else:
             print("⚠️ WARNING: No predictions in response!")
-            print(f"⚠️ Output structure: {outputs[0]}")
+            print(f"⚠️ Available keys in output: {list(outputs[0].keys())}")
 
-        # Get visualization
+        # Get visualization - handle different response structures
         annotated_image_base64 = None
         
+        # Method 1: Check for 'visualization' key
         if 'visualization' in outputs[0]:
             viz = outputs[0]['visualization']
             if isinstance(viz, dict):
                 annotated_image_base64 = viz.get('value', '')
             elif isinstance(viz, str):
                 annotated_image_base64 = viz
-
-        if not annotated_image_base64 and 'annotated_image' in outputs[0]:
+        
+        # Method 2: Check for 'bounding_box_visualization' key
+        elif 'bounding_box_visualization' in outputs[0]:
+            viz = outputs[0]['bounding_box_visualization']
+            if isinstance(viz, dict):
+                annotated_image_base64 = viz.get('value', '')
+            elif isinstance(viz, str):
+                annotated_image_base64 = viz
+            print(f"📊 Using bounding_box_visualization")
+        
+        # Method 3: Check for 'annotated_image' key
+        elif 'annotated_image' in outputs[0]:
             annotated_image_base64 = outputs[0]['annotated_image']
+        
+        # Method 4: Check any key with 'visual' or 'image'
+        else:
+            for key in outputs[0].keys():
+                if 'visual' in key.lower() or 'image' in key.lower():
+                    viz = outputs[0][key]
+                    if isinstance(viz, dict):
+                        annotated_image_base64 = viz.get('value', '')
+                    elif isinstance(viz, str):
+                        annotated_image_base64 = viz
+                    print(f"📊 Using visualization from key: {key}")
+                    break
 
         if annotated_image_base64 and annotated_image_base64.startswith('data:'):
             annotated_image_base64 = annotated_image_base64.split(',', 1)[1]
