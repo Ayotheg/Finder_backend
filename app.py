@@ -91,8 +91,10 @@ def compress_image(file_path, max_size_mb=5, quality=85):
 
 def filter_detections_by_prompt(predictions, prompt):
     """Filter detections based on user prompt with improved fuzzy matching"""
-    if not prompt:
-        return predictions
+    
+    # If no prompt, return everything with 'all' status
+    if not prompt or prompt.strip() == '':
+        return predictions, "all"
     
     prompt_lower = prompt.lower().strip()
     filtered = []
@@ -121,7 +123,11 @@ def filter_detections_by_prompt(predictions, prompt):
         if match:
             filtered.append(pred)
     
-    return filtered if filtered else predictions
+    # Return filtered if found, otherwise all with 'no_match' status
+    if filtered:
+        return filtered, "matched"
+    else:
+        return predictions, "no_match"  # Show all but flag no match
 
 
 @app.route('/')
@@ -242,7 +248,7 @@ def analyze_image():
         # Get predictions
         predictions_data = outputs[0].get('predictions', {})
         all_predictions = predictions_data.get('predictions', [])
-        print(f"📊 Total detections: {len(all_predictions)}")
+        print(f"📊 Total detections from Roboflow: {len(all_predictions)}")
 
         # Get visualization
         annotated_image_base64 = None
@@ -262,44 +268,51 @@ def analyze_image():
 
         print(f"🎨 Visualization: {'✓ Found' if annotated_image_base64 else '❌ Not found'}")
 
-        # Filter detections based on prompt
-        filtered_detections = filter_detections_by_prompt(all_predictions, prompt)
+        # Apply smart filtering
+        filtered_detections, filter_status = filter_detections_by_prompt(all_predictions, prompt)
+        print(f"🔍 Filter status: {filter_status}")
         print(f"🔍 Filtered detections: {len(filtered_detections)}")
 
-        # Prepare response
-        if not filtered_detections and prompt:
-            detected_classes = list(set(p.get('class', 'unknown') for p in all_predictions))
-            response_data = {
-                'success': True,
-                'prompt': prompt,
-                'annotated_image': annotated_image_base64,
-                'detections': [],
-                'total_detections': len(all_predictions),
-                'filtered_detections': 0,
-                'message': f"No '{prompt}' found. Detected: {', '.join(detected_classes)}"
-            }
-        else:
-            response_data = {
-                'success': True,
-                'prompt': prompt,
-                'annotated_image': annotated_image_base64,
-                'detections': [
-                    {
-                        'class': pred.get('class'),
-                        'confidence': pred.get('confidence'),
-                        'x': pred.get('x'),
-                        'y': pred.get('y'),
-                        'width': pred.get('width'),
-                        'height': pred.get('height')
-                    }
-                    for pred in filtered_detections
-                ],
-                'total_detections': len(all_predictions),
-                'filtered_detections': len(filtered_detections),
-                'message': f"Found {len(filtered_detections)} {prompt}(s)" if prompt else f"Found {len(filtered_detections)} item(s)"
-            }
+        # Get list of detected classes for better messaging
+        detected_classes = list(set(p.get('class', 'unknown') for p in all_predictions))
 
-        print("✓ Response prepared successfully")
+        # Prepare response based on filter status
+        if filter_status == "no_match" and prompt:
+            # Prompt was used but nothing matched - show all anyway
+            message = f"'{prompt}' not found. Showing detected: {', '.join(detected_classes)}"
+        elif filter_status == "matched":
+            # Found what user was looking for
+            message = f"Found {len(filtered_detections)} {prompt}(s)"
+        else:  # filter_status == "all"
+            # No prompt - showing everything
+            if detected_classes:
+                message = f"Found {len(filtered_detections)} item(s): {', '.join(detected_classes)}"
+            else:
+                message = "No objects detected in image"
+
+        response_data = {
+            'success': True,
+            'prompt': prompt,
+            'annotated_image': annotated_image_base64,
+            'detections': [
+                {
+                    'class': pred.get('class'),
+                    'confidence': pred.get('confidence'),
+                    'x': pred.get('x'),
+                    'y': pred.get('y'),
+                    'width': pred.get('width'),
+                    'height': pred.get('height')
+                }
+                for pred in filtered_detections
+            ],
+            'total_detections': len(all_predictions),
+            'filtered_detections': len(filtered_detections),
+            'filter_status': filter_status,
+            'detected_classes': detected_classes,
+            'message': message
+        }
+
+        print(f"✓ Response prepared: {message}")
         print("="*50 + "\n")
         return jsonify(response_data)
 
