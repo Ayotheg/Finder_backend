@@ -309,15 +309,24 @@ def analyze_image():
         # Get visualization - handle different response structures
         annotated_image_base64 = None
         
-        # Method 1: Check for 'visualization' key
-        if 'visualization' in outputs[0]:
+        # Method 1: Check for 'mask_visualization' key (SAM 3 + Mask Viz)
+        if 'mask_visualization' in outputs[0]:
+            viz = outputs[0]['mask_visualization']
+            if isinstance(viz, dict):
+                annotated_image_base64 = viz.get('value', '')
+            elif isinstance(viz, str):
+                annotated_image_base64 = viz
+            print(f"📊 Using mask_visualization")
+        
+        # Method 2: Check for 'visualization' key
+        elif 'visualization' in outputs[0]:
             viz = outputs[0]['visualization']
             if isinstance(viz, dict):
                 annotated_image_base64 = viz.get('value', '')
             elif isinstance(viz, str):
                 annotated_image_base64 = viz
         
-        # Method 2: Check for 'bounding_box_visualization' key
+        # Method 3: Check for 'bounding_box_visualization' key
         elif 'bounding_box_visualization' in outputs[0]:
             viz = outputs[0]['bounding_box_visualization']
             if isinstance(viz, dict):
@@ -326,11 +335,11 @@ def analyze_image():
                 annotated_image_base64 = viz
             print(f"📊 Using bounding_box_visualization")
         
-        # Method 3: Check for 'annotated_image' key
+        # Method 4: Check for 'annotated_image' key
         elif 'annotated_image' in outputs[0]:
             annotated_image_base64 = outputs[0]['annotated_image']
         
-        # Method 4: Check any key with 'visual' or 'image'
+        # Method 5: Check any key with 'visual' or 'image'
         else:
             for key in outputs[0].keys():
                 if 'visual' in key.lower() or 'image' in key.lower():
