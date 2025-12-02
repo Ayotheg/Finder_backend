@@ -33,7 +33,7 @@ ROBOFLOW_CONFIG = {
     'api_url': 'https://serverless.roboflow.com',
     'api_key': os.getenv("ROBOFLOW_API_KEY"),
     'workspace': 'the-bunker',
-    'workflow_id': 'find-brushes-books-vr-headsets-slippers-charger-heads-toast-machines-bags-and-changeovers'
+    'workflow_id': 'sam3-with-prompts'
 }
 
 # Validate configuration at startup
