@@ -89,57 +89,17 @@ def compress_image(file_path, max_size_mb=5, quality=85):
             return f.read()
 
 
-def filter_detections_by_prompt(predictions, prompt):
-    """Filter detections based on user prompt with improved fuzzy matching"""
-    
-    # If no prompt, return everything with 'all' status
-    if not prompt or prompt.strip() == '':
-        return predictions, "all"
-    
-    prompt_lower = prompt.lower().strip()
-    filtered = []
-    
-    # Split prompt into keywords
-    prompt_keywords = prompt_lower.split()
-    
-    for pred in predictions:
-        class_name = pred.get('class', '').lower()
-        
-        # Check various matching strategies
-        match = False
-        
-        # Exact match
-        if class_name == prompt_lower:
-            match = True
-        
-        # Class name contains any prompt keyword
-        elif any(keyword in class_name for keyword in prompt_keywords):
-            match = True
-        
-        # Any prompt keyword contains the class name
-        elif any(class_name in keyword for keyword in prompt_keywords):
-            match = True
-        
-        if match:
-            filtered.append(pred)
-    
-    # Return filtered if found, otherwise all with 'no_match' status
-    if filtered:
-        return filtered, "matched"
-    else:
-        return predictions, "no_match"  # Show all but flag no match
-
-
 @app.route('/')
 def index():
     """API info endpoint"""
     return jsonify({
         'name': 'Finder AI Backend',
-        'version': '1.0',
+        'version': '2.0',
         'endpoints': {
             'health': '/api/health',
             'analyze': '/api/analyze'
-        }
+        },
+        'features': ['SAM 3 Text Prompts', 'Smart Object Detection']
     })
 
 
@@ -155,7 +115,7 @@ def health_check():
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_image():
-    """Main endpoint for image analysis"""
+    """Main endpoint for image analysis with SAM 3 text prompts"""
     uploaded_file_path = None
     
     try:
@@ -180,6 +140,11 @@ def analyze_image():
 
         # Get prompt from form data
         prompt = request.form.get('prompt', '').strip()
+        
+        # Require a prompt for SAM 3
+        if not prompt:
+            print("⚠️  No prompt provided - using default")
+            prompt = "all objects"  # Default prompt
 
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
@@ -197,22 +162,28 @@ def analyze_image():
         encoded_image = base64.b64encode(compressed_image).decode('utf-8')
         print(f"✓ Image encoded (base64 length: {len(encoded_image)} chars)")
 
-        # Prepare Roboflow API request
+        # Prepare Roboflow API request with SAM 3 text prompts
         roboflow_url = f"{ROBOFLOW_CONFIG['api_url']}/{ROBOFLOW_CONFIG['workspace']}/workflows/{ROBOFLOW_CONFIG['workflow_id']}"
         
+        # UPDATED: Include prompt as input for SAM 3
         payload = {
             'api_key': ROBOFLOW_CONFIG['api_key'],
             'inputs': {
                 'image': {
                     'type': 'base64',
                     'value': encoded_image
+                },
+                'prompt': {
+                    'type': 'string',
+                    'value': prompt
                 }
             }
         }
 
         # Call Roboflow API
-        print(f"🚀 Calling Roboflow API...")
+        print(f"🚀 Calling Roboflow API with text prompt...")
         print(f"   URL: {roboflow_url}")
+        print(f"   Prompt: '{prompt}'")
         
         roboflow_response = requests.post(
             roboflow_url,
@@ -233,7 +204,7 @@ def analyze_image():
                 'error': f'Roboflow API error: {roboflow_response.status_code}',
                 'details': error_details,
                 'status_code': roboflow_response.status_code,
-                'message': 'Workflow configuration error. Please check your Roboflow workflow.'
+                'message': 'Workflow configuration error. Check that SAM 3 has text prompt input enabled.'
             }), 500
 
         roboflow_data = roboflow_response.json()
@@ -246,51 +217,41 @@ def analyze_image():
         print(json.dumps(roboflow_data, indent=2))
         print("="*50 + "\n")
 
-        # Extract predictions and visualization
+        # Extract outputs
         outputs = roboflow_data.get('outputs', [])
         if not outputs:
             print("❌ No outputs in Roboflow response")
             return jsonify({'error': 'No outputs from Roboflow'}), 500
 
         print(f"📦 Number of outputs: {len(outputs)}")
-        print(f"📦 Output keys: {outputs[0].keys() if outputs else 'None'}")
+        print(f"📦 Output keys: {list(outputs[0].keys())}")
 
-        # Get predictions - handle different response structures
+        # Get SAM 3 predictions (segmentation results)
         all_predictions = []
         
-        # Method 1: Check for model_1 (your workflow structure)
-        if 'model_1' in outputs[0]:
-            model_output = outputs[0]['model_1']
-            if isinstance(model_output, dict) and 'predictions' in model_output:
-                all_predictions = model_output['predictions']
-                print(f"📊 Predictions found in model_1")
+        # Check for SAM 3 output
+        if 'sam_3' in outputs[0]:
+            sam_output = outputs[0]['sam_3']
+            if isinstance(sam_output, dict):
+                # SAM 3 might return predictions or masks
+                all_predictions = sam_output.get('predictions', [])
+                if not all_predictions:
+                    all_predictions = sam_output.get('masks', [])
+                print(f"📊 SAM 3 predictions found")
         
-        # Method 2: Check for direct predictions key
-        elif 'predictions' in outputs[0]:
-            predictions_data = outputs[0]['predictions']
-            
-            # Check if it's nested
-            if isinstance(predictions_data, dict):
-                all_predictions = predictions_data.get('predictions', [])
-                print(f"📊 Predictions found in nested structure")
-            elif isinstance(predictions_data, list):
-                all_predictions = predictions_data
-                print(f"📊 Predictions found in list structure")
+        # Alternative key names for SAM output
+        elif 'sam3' in outputs[0]:
+            sam_output = outputs[0]['sam3']
+            if isinstance(sam_output, dict):
+                all_predictions = sam_output.get('predictions', sam_output.get('masks', []))
         
-        # Method 3: Check for object_detection_model output
-        elif 'object_detection_model' in outputs[0]:
-            obj_detection = outputs[0]['object_detection_model']
-            if isinstance(obj_detection, dict):
-                all_predictions = obj_detection.get('predictions', [])
-                print(f"📊 Predictions found in object_detection_model")
-        
-        # Method 4: Check for any key containing 'model' or 'prediction'
+        # Check for any segmentation or prediction keys
         else:
             for key in outputs[0].keys():
-                if 'model' in key.lower() or 'prediction' in key.lower():
+                if 'sam' in key.lower() or 'segment' in key.lower() or 'prediction' in key.lower():
                     pred_data = outputs[0][key]
-                    if isinstance(pred_data, dict) and 'predictions' in pred_data:
-                        all_predictions = pred_data['predictions']
+                    if isinstance(pred_data, dict):
+                        all_predictions = pred_data.get('predictions', pred_data.get('masks', []))
                         print(f"📊 Predictions found in key: {key}")
                         break
                     elif isinstance(pred_data, list):
@@ -298,7 +259,7 @@ def analyze_image():
                         print(f"📊 Predictions found in key: {key}")
                         break
         
-        print(f"📊 Total detections from Roboflow: {len(all_predictions)}")
+        print(f"📊 Total detections from SAM 3: {len(all_predictions)}")
         
         if all_predictions:
             print(f"📊 Sample prediction: {all_predictions[0]}")
@@ -306,10 +267,10 @@ def analyze_image():
             print("⚠️ WARNING: No predictions in response!")
             print(f"⚠️ Available keys in output: {list(outputs[0].keys())}")
 
-        # Get visualization - handle different response structures
+        # Get visualization (annotated image with masks)
         annotated_image_base64 = None
         
-        # Method 1: Check for 'mask_visualization' key (SAM 3 + Mask Viz)
+        # Check for mask_visualization (most likely in your workflow)
         if 'mask_visualization' in outputs[0]:
             viz = outputs[0]['mask_visualization']
             if isinstance(viz, dict):
@@ -318,31 +279,19 @@ def analyze_image():
                 annotated_image_base64 = viz
             print(f"📊 Using mask_visualization")
         
-        # Method 2: Check for 'visualization' key
+        # Alternative visualization keys
         elif 'visualization' in outputs[0]:
             viz = outputs[0]['visualization']
             if isinstance(viz, dict):
                 annotated_image_base64 = viz.get('value', '')
             elif isinstance(viz, str):
                 annotated_image_base64 = viz
+            print(f"📊 Using visualization")
         
-        # Method 3: Check for 'bounding_box_visualization' key
-        elif 'bounding_box_visualization' in outputs[0]:
-            viz = outputs[0]['bounding_box_visualization']
-            if isinstance(viz, dict):
-                annotated_image_base64 = viz.get('value', '')
-            elif isinstance(viz, str):
-                annotated_image_base64 = viz
-            print(f"📊 Using bounding_box_visualization")
-        
-        # Method 4: Check for 'annotated_image' key
-        elif 'annotated_image' in outputs[0]:
-            annotated_image_base64 = outputs[0]['annotated_image']
-        
-        # Method 5: Check any key with 'visual' or 'image'
+        # Check any key with 'visual' or 'image'
         else:
             for key in outputs[0].keys():
-                if 'visual' in key.lower() or 'image' in key.lower():
+                if 'visual' in key.lower() or 'annotated' in key.lower():
                     viz = outputs[0][key]
                     if isinstance(viz, dict):
                         annotated_image_base64 = viz.get('value', '')
@@ -351,32 +300,20 @@ def analyze_image():
                     print(f"📊 Using visualization from key: {key}")
                     break
 
+        # Clean up base64 data URL if present
         if annotated_image_base64 and annotated_image_base64.startswith('data:'):
             annotated_image_base64 = annotated_image_base64.split(',', 1)[1]
 
         print(f"🎨 Visualization: {'✓ Found' if annotated_image_base64 else '❌ Not found'}")
 
-        # Apply smart filtering
-        filtered_detections, filter_status = filter_detections_by_prompt(all_predictions, prompt)
-        print(f"🔍 Filter status: {filter_status}")
-        print(f"🔍 Filtered detections: {len(filtered_detections)}")
-
-        # Get list of detected classes for better messaging
-        detected_classes = list(set(p.get('class', 'unknown') for p in all_predictions))
-
-        # Prepare response based on filter status
-        if filter_status == "no_match" and prompt:
-            # Prompt was used but nothing matched - show all anyway
-            message = f"'{prompt}' not found. Showing detected: {', '.join(detected_classes)}"
-        elif filter_status == "matched":
-            # Found what user was looking for
-            message = f"Found {len(filtered_detections)} {prompt}(s)"
-        else:  # filter_status == "all"
-            # No prompt - showing everything
-            if detected_classes:
-                message = f"Found {len(filtered_detections)} item(s): {', '.join(detected_classes)}"
+        # Prepare response message
+        if all_predictions:
+            if len(all_predictions) == 1:
+                message = f"Found 1 '{prompt}'"
             else:
-                message = "No objects detected in image"
+                message = f"Found {len(all_predictions)} '{prompt}' objects"
+        else:
+            message = f"No '{prompt}' found in the image"
 
         response_data = {
             'success': True,
@@ -384,19 +321,17 @@ def analyze_image():
             'annotated_image': annotated_image_base64,
             'detections': [
                 {
-                    'class': pred.get('class'),
-                    'confidence': pred.get('confidence'),
-                    'x': pred.get('x'),
-                    'y': pred.get('y'),
-                    'width': pred.get('width'),
-                    'height': pred.get('height')
+                    'class': pred.get('class', prompt),  # Use prompt as class if not provided
+                    'confidence': pred.get('confidence', 1.0),
+                    'x': pred.get('x', 0),
+                    'y': pred.get('y', 0),
+                    'width': pred.get('width', 0),
+                    'height': pred.get('height', 0),
+                    'mask': pred.get('mask')  # Include mask data if available
                 }
-                for pred in filtered_detections
+                for pred in all_predictions
             ],
             'total_detections': len(all_predictions),
-            'filtered_detections': len(filtered_detections),
-            'filter_status': filter_status,
-            'detected_classes': detected_classes,
             'message': message
         }
 
