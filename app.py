@@ -165,7 +165,10 @@ def analyze_image():
         # Prepare Roboflow API request with SAM 3 text prompts
         roboflow_url = f"{ROBOFLOW_CONFIG['api_url']}/{ROBOFLOW_CONFIG['workspace']}/workflows/{ROBOFLOW_CONFIG['workflow_id']}"
         
-        # UPDATED: Include prompt as input for SAM 3
+        # UPDATED: Include prompts as ARRAY for SAM 3
+        # SAM 3 expects prompts as a list/array, not a single string
+        prompts_array = [p.strip() for p in prompt.split(',')] if ',' in prompt else [prompt]
+        
         payload = {
             'api_key': ROBOFLOW_CONFIG['api_key'],
             'inputs': {
@@ -173,17 +176,14 @@ def analyze_image():
                     'type': 'base64',
                     'value': encoded_image
                 },
-                'prompt': {
-                    'type': 'string',
-                    'value': prompt
-                }
+                'prompts': prompts_array  # Send as array, not string
             }
         }
 
         # Call Roboflow API
-        print(f"🚀 Calling Roboflow API with text prompt...")
+        print(f"🚀 Calling Roboflow API with text prompts...")
         print(f"   URL: {roboflow_url}")
-        print(f"   Prompt: '{prompt}'")
+        print(f"   Prompts (array): {prompts_array}")
         
         roboflow_response = requests.post(
             roboflow_url,
