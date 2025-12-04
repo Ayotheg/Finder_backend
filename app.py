@@ -169,16 +169,18 @@ def analyze_image():
         # SAM 3 expects prompts as a list/array, not a single string
         prompts_array = [p.strip() for p in prompt.split(',')] if ',' in prompt else [prompt]
         
+        # Try simpler payload structure first
         payload = {
             'api_key': ROBOFLOW_CONFIG['api_key'],
             'inputs': {
-                'image': {
-                    'type': 'base64',
-                    'value': encoded_image
-                },
-                'prompts': prompts_array  # Send as array, not string
+                'image': encoded_image,  # Try without type/value wrapper
+                'prompts': prompts_array
             }
         }
+        
+        print(f"📦 Payload structure:")
+        print(f"   - image: {len(encoded_image)} chars (base64)")
+        print(f"   - prompts: {prompts_array}")
 
         # Call Roboflow API
         print(f"🚀 Calling Roboflow API with text prompts...")
@@ -215,6 +217,21 @@ def analyze_image():
         print("\n" + "="*50)
         print("FULL ROBOFLOW RESPONSE:")
         print(json.dumps(roboflow_data, indent=2))
+        print("="*50 + "\n")
+        
+        # CRITICAL DEBUG: Log what we're actually getting
+        print("\n" + "🔍 DEBUGGING OUTPUT STRUCTURE:")
+        if outputs and len(outputs) > 0:
+            print(f"   Available keys: {list(outputs[0].keys())}")
+            for key in outputs[0].keys():
+                value = outputs[0][key]
+                value_type = type(value).__name__
+                if isinstance(value, dict):
+                    print(f"   - {key} ({value_type}): {list(value.keys())}")
+                elif isinstance(value, str):
+                    print(f"   - {key} ({value_type}): {len(value)} chars")
+                else:
+                    print(f"   - {key} ({value_type})")
         print("="*50 + "\n")
 
         # Extract outputs
@@ -305,6 +322,37 @@ def analyze_image():
             annotated_image_base64 = annotated_image_base64.split(',', 1)[1]
 
         print(f"🎨 Visualization: {'✓ Found' if annotated_image_base64 else '❌ Not found'}")
+
+        # CRITICAL: If no visualization, we need to handle this
+        if not annotated_image_base64:
+            print("⚠️  WARNING: No visualization image found!")
+            print("⚠️  This might mean:")
+            print("   1. Mask Visualization block is not connected")
+            print("   2. SAM 3 found no objects to segment")
+            print("   3. Workflow configuration issue")
+            print(f"   4. Available output keys: {list(outputs[0].keys())}")
+            
+            # Try to provide helpful error message
+            if len(all_predictions) == 0:
+                return jsonify({
+                    'success': False,
+                    'error': 'No objects detected',
+                    'message': f"SAM 3 could not find any '{prompt}' in the image",
+                    'prompt': prompt,
+                    'total_detections': 0,
+                    'detections': [],
+                    'annotated_image': None
+                }), 200  # Return 200 but with no detections
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Visualization not generated',
+                    'message': 'Workflow returned predictions but no visualization image. Check Mask Visualization block.',
+                    'prompt': prompt,
+                    'total_detections': len(all_predictions),
+                    'detections': [],
+                    'annotated_image': None
+                }), 200
 
         # Prepare response message
         if all_predictions:
