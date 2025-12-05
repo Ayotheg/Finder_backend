@@ -1,428 +1,344 @@
+# finder_backend.py
+import os
+import io
+import json
+import base64
+import traceback
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-import requests
-import base64
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-import traceback
 from PIL import Image
-import io
 
-load_dotenv()
+# Load environment variables from .env into os.environ
+load_dotenv()  # <-- ensures ROBOFLOW_API_KEY (and others) are loaded
 
-app = Flask(__name__, static_folder='public')
+# --- App config ---
+app = Flask(__name__, static_folder="public")
 
-# Better CORS configuration
-CORS(app, resources={
-    r"/api/*": {
-        "origins": "*",
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"]
-    }
-})
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Configuration
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+UPLOAD_FOLDER = "uploads"
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
-# Roboflow Configuration
-ROBOFLOW_CONFIG = {
-    'api_url': 'https://serverless.roboflow.com',
-    'api_key': os.getenv("ROBOFLOW_API_KEY"),
-    'workspace': 'the-bunker',
-    'workflow_id': 'sam3-with-prompts'
-}
-
-# Validate configuration at startup
-if not ROBOFLOW_CONFIG['api_key']:
-    print("⚠️  WARNING: ROBOFLOW_API_KEY not set in environment!")
-else:
-    print(f"✓ Roboflow API Key configured (ending with: ...{ROBOFLOW_CONFIG['api_key'][-4:]})")
-    print(f"✓ Workspace: {ROBOFLOW_CONFIG['workspace']}")
-    print(f"✓ Workflow ID: {ROBOFLOW_CONFIG['workflow_id']}")
-
-# Create uploads folder if it doesn't exist
 Path(UPLOAD_FOLDER).mkdir(exist_ok=True)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
+# --- Roboflow config (loaded from env) ---
+ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
+ROBOFLOW_WORKSPACE = os.getenv("ROBOFLOW_WORKSPACE", "the-bunker")
+ROBOFLOW_WORKFLOW_ID = os.getenv("ROBOFLOW_WORKFLOW_ID", "sam3-with-prompts")
+ROBOFLOW_BASE = os.getenv("ROBOFLOW_API_URL", "https://serverless.roboflow.com")
+
+ROBOFLOW_WORKFLOW_URL = f"{ROBOFLOW_BASE}/{ROBOFLOW_WORKSPACE}/workflows/{ROBOFLOW_WORKFLOW_ID}"
+
+# Startup checks
+if not ROBOFLOW_API_KEY:
+    print("⚠️  WARNING: ROBOFLOW_API_KEY not set in environment (check your .env)")
+else:
+    print(f"✓ Roboflow API Key configured (ending with: ...{ROBOFLOW_API_KEY[-4:]})")
+print(f"✓ Roboflow workflow URL: {ROBOFLOW_WORKFLOW_URL}")
+
+# --- Helpers ---
+def allowed_file(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def allowed_file(filename):
-    """Check if file extension is allowed"""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-def compress_image(file_path, max_size_mb=5, quality=85):
-    """Compress image if it's too large - important for mobile photos"""
+def compress_image(file_path: str, quality: int = 85, max_dim: int = 1920) -> bytes:
+    """Open, resize if huge, convert to JPEG and return bytes."""
     try:
         img = Image.open(file_path)
-        
-        # Convert RGBA to RGB if necessary
-        if img.mode == 'RGBA':
-            img = img.convert('RGB')
-        
-        # Resize if image is very large (common with mobile photos)
-        max_dimension = 1920  # Max width or height
-        if max(img.size) > max_dimension:
-            ratio = max_dimension / max(img.size)
+        if img.mode == "RGBA":
+            img = img.convert("RGB")
+        # Resize if too large
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
             new_size = tuple(int(dim * ratio) for dim in img.size)
             img = img.resize(new_size, Image.Resampling.LANCZOS)
             print(f"  Image resized to: {new_size}")
-        
-        # Save with compression
         output = io.BytesIO()
-        img.save(output, format='JPEG', quality=quality, optimize=True)
+        img.save(output, format="JPEG", quality=quality, optimize=True)
         output.seek(0)
-        
-        compressed_data = output.getvalue()
-        print(f"  Compressed size: {len(compressed_data) / 1024:.2f} KB")
-        return compressed_data
-        
+        data = output.getvalue()
+        print(f"  Compressed size: {len(data) / 1024:.2f} KB")
+        return data
     except Exception as e:
-        print(f"  Image compression failed: {e}")
-        # Return original if compression fails
-        with open(file_path, 'rb') as f:
+        print(f"  Image compression failed: {e}; falling back to raw bytes")
+        with open(file_path, "rb") as f:
             return f.read()
 
 
-@app.route('/')
+# --- Routes ---
+@app.route("/")
 def index():
-    """API info endpoint"""
-    return jsonify({
-        'name': 'Finder AI Backend',
-        'version': '2.0',
-        'endpoints': {
-            'health': '/api/health',
-            'analyze': '/api/analyze'
-        },
-        'features': ['SAM 3 Text Prompts', 'Smart Object Detection']
-    })
-
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'ok',
-        'message': 'Finder AI Backend is running',
-        'roboflow_configured': bool(ROBOFLOW_CONFIG['api_key'])
-    })
-
-
-@app.route('/api/analyze', methods=['POST'])
-def analyze_image():
-    """Main endpoint for image analysis with SAM 3 text prompts"""
-    uploaded_file_path = None
-    
-    try:
-        print("\n" + "="*50)
-        print("NEW REQUEST RECEIVED")
-        print("="*50)
-        
-        # Check if image file is present
-        if 'image' not in request.files:
-            print("❌ No image file in request")
-            return jsonify({'error': 'No image file provided'}), 400
-
-        file = request.files['image']
-
-        if file.filename == '':
-            print("❌ Empty filename")
-            return jsonify({'error': 'No file selected'}), 400
-
-        if not allowed_file(file.filename):
-            print(f"❌ Invalid file type: {file.filename}")
-            return jsonify({'error': 'Invalid file type. Allowed: PNG, JPG, JPEG, GIF'}), 400
-
-        # Get prompt from form data
-        prompt = request.form.get('prompt', '').strip()
-        
-        # Require a prompt for SAM 3
-        if not prompt:
-            print("⚠️  No prompt provided - using default")
-            prompt = "all objects"  # Default prompt
-
-        # Save uploaded file temporarily
-        filename = secure_filename(file.filename)
-        uploaded_file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(uploaded_file_path)
-        
-        file_size = os.path.getsize(uploaded_file_path)
-        print(f"📁 File saved: {filename}")
-        print(f"📊 Original size: {file_size / 1024:.2f} KB")
-        print(f"🔍 User prompt: '{prompt}'")
-
-        # Compress image (important for mobile photos)
-        print("🔄 Compressing image...")
-        compressed_image = compress_image(uploaded_file_path)
-        encoded_image = base64.b64encode(compressed_image).decode('utf-8')
-        print(f"✓ Image encoded (base64 length: {len(encoded_image)} chars)")
-
-        # Prepare Roboflow API request with SAM 3 text prompts
-        roboflow_url = f"{ROBOFLOW_CONFIG['api_url']}/{ROBOFLOW_CONFIG['workspace']}/workflows/{ROBOFLOW_CONFIG['workflow_id']}"
-        
-        # UPDATED: Include prompts as ARRAY for SAM 3
-        # SAM 3 expects prompts as a list/array, not a single string
-        prompts_array = [p.strip() for p in prompt.split(',')] if ',' in prompt else [prompt]
-        
-        # Try simpler payload structure first
-        payload = {
-            'api_key': ROBOFLOW_CONFIG['api_key'],
-            'inputs': {
-                'image': encoded_image,  # Try without type/value wrapper
-                'prompts': prompts_array
-            }
+    return jsonify(
+        {
+            "name": "Finder AI Backend",
+            "version": "2.0",
+            "endpoints": {"health": "/api/health", "analyze": "/api/analyze"},
+            "features": ["SAM 3 Text Prompts", "Mask Visualization"],
         }
-        
-        print(f"📦 Payload structure:")
-        print(f"   - image: {len(encoded_image)} chars (base64)")
-        print(f"   - prompts: {prompts_array}")
+    )
 
-        # Call Roboflow API
-        print(f"🚀 Calling Roboflow API with text prompts...")
-        print(f"   URL: {roboflow_url}")
-        print(f"   Prompts (array): {prompts_array}")
-        
-        roboflow_response = requests.post(
-            roboflow_url,
-            json=payload,
-            headers={'Content-Type': 'application/json'},
-            timeout=60  # 60 second timeout
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    return jsonify(
+        {
+            "status": "ok",
+            "message": "Finder AI Backend is running",
+            "roboflow_configured": bool(ROBOFLOW_API_KEY),
+        }
+    )
+
+
+@app.route("/api/analyze", methods=["POST"])
+def analyze_image():
+    uploaded_file_path = None
+    try:
+        print("\n" + "=" * 50)
+        print("NEW REQUEST RECEIVED")
+        print("=" * 50)
+
+        # Validate file
+        if "image" not in request.files:
+            return jsonify({"error": "No image file provided"}), 400
+
+        file = request.files["image"]
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
+        if not allowed_file(file.filename):
+            return (
+                jsonify({"error": "Invalid file type. Allowed: PNG, JPG, JPEG, GIF"}),
+                400,
+            )
+
+        # Prompt
+        prompt = (request.form.get("prompt") or "").strip()
+        if not prompt:
+            print("⚠️  No prompt provided - using default 'all objects'")
+            prompt = "all objects"
+
+        # Save temporarily
+        filename = secure_filename(file.filename)
+        uploaded_file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(uploaded_file_path)
+        print(f"📁 File saved: {filename}")
+
+        # Compress & encode
+        compressed_bytes = compress_image(uploaded_file_path)
+        encoded_image = base64.b64encode(compressed_bytes).decode("utf-8")
+        print(f"✓ Image encoded (base64 length: {len(encoded_image)} chars)")
+        prompts_array = [p.strip() for p in prompt.split(",")] if "," in prompt else [prompt]
+
+        # Build payload
+        payload = {
+            "api_key": ROBOFLOW_API_KEY,
+            "inputs": {"image": encoded_image, "prompts": prompts_array},
+        }
+
+        print(f"🚀 Calling Roboflow workflow at: {ROBOFLOW_WORKFLOW_URL}")
+        # Best practice: send JSON; serverless workflows expect JSON for base64 image + prompts
+        roboflow_resp = requests.post(
+            ROBOFLOW_WORKFLOW_URL, json=payload, headers={"Content-Type": "application/json"}, timeout=60
         )
-        
-        print(f"📥 Roboflow response status: {roboflow_response.status_code}")
 
-        if not roboflow_response.ok:
-            error_details = roboflow_response.text
-            print(f"❌ ROBOFLOW ERROR:")
-            print(f"   Status: {roboflow_response.status_code}")
-            print(f"   Details: {error_details}")
-            
-            return jsonify({
-                'error': f'Roboflow API error: {roboflow_response.status_code}',
-                'details': error_details,
-                'status_code': roboflow_response.status_code,
-                'message': 'Workflow configuration error. Check that SAM 3 has text prompt input enabled.'
-            }), 500
+        print(f"📥 Roboflow response status: {roboflow_resp.status_code}")
 
-        roboflow_data = roboflow_response.json()
+        if not roboflow_resp.ok:
+            # Try to include JSON-decoded error if available
+            try:
+                err_json = roboflow_resp.json()
+            except Exception:
+                err_json = roboflow_resp.text
+            print("❌ ROBOFLOW ERROR:", err_json)
+            return (
+                jsonify(
+                    {
+                        "error": f"Roboflow API error: {roboflow_resp.status_code}",
+                        "details": err_json,
+                        "message": "Workflow configuration error. Ensure the workflow accepts 'prompts' (text array) and outputs mask_visualization.",
+                    }
+                ),
+                500,
+            )
+
+        # Parse response
+        try:
+            roboflow_data = roboflow_resp.json()
+        except Exception as e:
+            print("❌ Failed to parse Roboflow JSON:", e)
+            return jsonify({"error": "Invalid JSON from Roboflow", "details": str(e)}), 500
+
+        # Extract outputs safely (must do this BEFORE any outputs-dependent logs)
+        outputs = roboflow_data.get("outputs", [])
         print("✓ Roboflow response received successfully")
-        
-        # DEBUG: Print full response to see structure
-        import json
-        print("\n" + "="*50)
-        print("FULL ROBOFLOW RESPONSE:")
-        print(json.dumps(roboflow_data, indent=2))
-        print("="*50 + "\n")
-        
-        # CRITICAL DEBUG: Log what we're actually getting
-        print("\n" + "🔍 DEBUGGING OUTPUT STRUCTURE:")
-        if outputs and len(outputs) > 0:
-            print(f"   Available keys: {list(outputs[0].keys())}")
-            for key in outputs[0].keys():
-                value = outputs[0][key]
-                value_type = type(value).__name__
-                if isinstance(value, dict):
-                    print(f"   - {key} ({value_type}): {list(value.keys())}")
-                elif isinstance(value, str):
-                    print(f"   - {key} ({value_type}): {len(value)} chars")
-                else:
-                    print(f"   - {key} ({value_type})")
-        print("="*50 + "\n")
+        print("=" * 50)
+        print("FULL ROBOFLOW RESPONSE SNIPPET:")
+        # Print a small snippet so logs don't explode
+        try:
+            print(json.dumps(roboflow_data if len(json.dumps(roboflow_data)) < 2000 else {"outputs": "[big]"}, indent=2) )
+        except Exception:
+            print("(response too large to pretty print)")
 
-        # Extract outputs
-        outputs = roboflow_data.get('outputs', [])
+        # Validate outputs
         if not outputs:
             print("❌ No outputs in Roboflow response")
-            return jsonify({'error': 'No outputs from Roboflow'}), 500
+            return jsonify({"error": "No outputs from Roboflow", "raw": roboflow_data}), 500
 
-        print(f"📦 Number of outputs: {len(outputs)}")
-        print(f"📦 Output keys: {list(outputs[0].keys())}")
+        print(f"📦 Number of outputs blocks: {len(outputs)}")
+        print(f"📦 First output keys: {list(outputs[0].keys())}")
 
-        # Get SAM 3 predictions (segmentation results)
+        # Attempt to locate SAM predictions & visualizations across outputs
         all_predictions = []
-        
-        # Check for SAM 3 output
-        if 'sam_3' in outputs[0]:
-            sam_output = outputs[0]['sam_3']
-            if isinstance(sam_output, dict):
-                # SAM 3 might return predictions or masks
-                all_predictions = sam_output.get('predictions', [])
-                if not all_predictions:
-                    all_predictions = sam_output.get('masks', [])
-                print(f"📊 SAM 3 predictions found")
-        
-        # Alternative key names for SAM output
-        elif 'sam3' in outputs[0]:
-            sam_output = outputs[0]['sam3']
-            if isinstance(sam_output, dict):
-                all_predictions = sam_output.get('predictions', sam_output.get('masks', []))
-        
-        # Check for any segmentation or prediction keys
-        else:
-            for key in outputs[0].keys():
-                if 'sam' in key.lower() or 'segment' in key.lower() or 'prediction' in key.lower():
-                    pred_data = outputs[0][key]
-                    if isinstance(pred_data, dict):
-                        all_predictions = pred_data.get('predictions', pred_data.get('masks', []))
-                        print(f"📊 Predictions found in key: {key}")
-                        break
-                    elif isinstance(pred_data, list):
-                        all_predictions = pred_data
-                        print(f"📊 Predictions found in key: {key}")
-                        break
-        
-        print(f"📊 Total detections from SAM 3: {len(all_predictions)}")
-        
-        if all_predictions:
-            print(f"📊 Sample prediction: {all_predictions[0]}")
-        else:
-            print("⚠️ WARNING: No predictions in response!")
-            print(f"⚠️ Available keys in output: {list(outputs[0].keys())}")
-
-        # Get visualization (annotated image with masks)
         annotated_image_base64 = None
-        
-        # Check for mask_visualization (most likely in your workflow)
-        if 'mask_visualization' in outputs[0]:
-            viz = outputs[0]['mask_visualization']
-            if isinstance(viz, dict):
-                annotated_image_base64 = viz.get('value', '')
-            elif isinstance(viz, str):
-                annotated_image_base64 = viz
-            print(f"📊 Using mask_visualization")
-        
-        # Alternative visualization keys
-        elif 'visualization' in outputs[0]:
-            viz = outputs[0]['visualization']
-            if isinstance(viz, dict):
-                annotated_image_base64 = viz.get('value', '')
-            elif isinstance(viz, str):
-                annotated_image_base64 = viz
-            print(f"📊 Using visualization")
-        
-        # Check any key with 'visual' or 'image'
-        else:
-            for key in outputs[0].keys():
-                if 'visual' in key.lower() or 'annotated' in key.lower():
-                    viz = outputs[0][key]
-                    if isinstance(viz, dict):
-                        annotated_image_base64 = viz.get('value', '')
-                    elif isinstance(viz, str):
-                        annotated_image_base64 = viz
-                    print(f"📊 Using visualization from key: {key}")
+
+        # Search every output block (some workflows put SAM block first, viz second)
+        for i, out_block in enumerate(outputs):
+            # 1) Try to find SAM output (predictions / masks)
+            if isinstance(out_block, dict):
+                # common keys to check
+                for key in out_block.keys():
+                    lower = key.lower()
+                    if lower in ("sam_3", "sam3", "sam"):
+                        sam_data = out_block.get(key)
+                        if isinstance(sam_data, dict):
+                            preds = sam_data.get("predictions") or sam_data.get("masks") or []
+                            if preds:
+                                all_predictions.extend(preds)
+                                print(f"📊 Found SAM predictions in outputs[{i}]['{key}'] (count={len(preds)})")
+                    # generic prediction/segment keys
+                    if "prediction" in lower or "segment" in lower or "masks" in lower:
+                        val = out_block.get(key)
+                        if isinstance(val, list):
+                            all_predictions.extend(val)
+                            print(f"📊 Found list predictions in outputs[{i}]['{key}'] (count={len(val)})")
+                        elif isinstance(val, dict):
+                            preds = val.get("predictions") or val.get("masks") or []
+                            if preds:
+                                all_predictions.extend(preds)
+                                print(f"📊 Found dict predictions in outputs[{i}]['{key}'] (count={len(preds)})")
+
+                # 2) Try to find a visualization image (mask_visualization or similar)
+                viz_keys = ["mask_visualization", "visualization", "annotated_image", "image"]
+                for vk in viz_keys:
+                    if vk in out_block:
+                        viz_val = out_block.get(vk)
+                        if isinstance(viz_val, dict):
+                            # many blocks use {'value': 'data:image/png;base64,...'} or {'value': '<base64>'}
+                            candidate = viz_val.get("value") or viz_val.get("image") or viz_val.get("data")
+                        else:
+                            candidate = viz_val
+                        if isinstance(candidate, str) and candidate.strip():
+                            annotated_image_base64 = candidate
+                            print(f"🎨 Found visualization in outputs[{i}]['{vk}']")
+                            break
+                if annotated_image_base64:
+                    # stop searching viz once found
                     break
 
-        # Clean up base64 data URL if present
-        if annotated_image_base64 and annotated_image_base64.startswith('data:'):
-            annotated_image_base64 = annotated_image_base64.split(',', 1)[1]
+        # If annotated_image looks like a data URL, strip prefix
+        if annotated_image_base64 and annotated_image_base64.startswith("data:"):
+            annotated_image_base64 = annotated_image_base64.split(",", 1)[1]
 
-        print(f"🎨 Visualization: {'✓ Found' if annotated_image_base64 else '❌ Not found'}")
+        print(f"📊 Total detections found (len): {len(all_predictions)}")
+        print(f"🎨 Visualization found: {'yes' if annotated_image_base64 else 'no'}")
 
-        # CRITICAL: If no visualization, we need to handle this
+        # If there are no predictions and no visualization, return helpful message (200 with empty results)
         if not annotated_image_base64:
-            print("⚠️  WARNING: No visualization image found!")
-            print("⚠️  This might mean:")
-            print("   1. Mask Visualization block is not connected")
-            print("   2. SAM 3 found no objects to segment")
-            print("   3. Workflow configuration issue")
-            print(f"   4. Available output keys: {list(outputs[0].keys())}")
-            
-            # Try to provide helpful error message
-            if len(all_predictions) == 0:
-                return jsonify({
-                    'success': False,
-                    'error': 'No objects detected',
-                    'message': f"SAM 3 could not find any '{prompt}' in the image",
-                    'prompt': prompt,
-                    'total_detections': 0,
-                    'detections': [],
-                    'annotated_image': None
-                }), 200  # Return 200 but with no detections
+            # If SAM produced predictions but viz missing, return predictions but indicate missing viz
+            if all_predictions:
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Visualization not generated",
+                            "message": "Workflow returned predictions but no visualization image. Check Mask Visualization block.",
+                            "prompt": prompt,
+                            "total_detections": len(all_predictions),
+                            "detections": all_predictions,
+                            "annotated_image": None,
+                        }
+                    ),
+                    200,
+                )
             else:
-                return jsonify({
-                    'success': False,
-                    'error': 'Visualization not generated',
-                    'message': 'Workflow returned predictions but no visualization image. Check Mask Visualization block.',
-                    'prompt': prompt,
-                    'total_detections': len(all_predictions),
-                    'detections': [],
-                    'annotated_image': None
-                }), 200
+                # No detections
+                return (
+                    jsonify(
+                        {
+                            "success": True,
+                            "message": f"No objects found for prompt '{prompt}'",
+                            "prompt": prompt,
+                            "total_detections": 0,
+                            "detections": [],
+                            "annotated_image": None,
+                        }
+                    ),
+                    200,
+                )
 
-        # Prepare response message
-        if all_predictions:
-            if len(all_predictions) == 1:
-                message = f"Found 1 '{prompt}'"
-            else:
-                message = f"Found {len(all_predictions)} '{prompt}' objects"
-        else:
-            message = f"No '{prompt}' found in the image"
+        # Prepare detection list to return (normalize fields if possible)
+        normalized_detections = []
+        for pred in all_predictions:
+            if not isinstance(pred, dict):
+                continue
+            normalized_detections.append(
+                {
+                    "class": pred.get("class") or pred.get("label") or prompt,
+                    "confidence": pred.get("confidence", pred.get("score", 1.0)),
+                    "x": pred.get("x", 0),
+                    "y": pred.get("y", 0),
+                    "width": pred.get("width", pred.get("w", 0)),
+                    "height": pred.get("height", pred.get("h", 0)),
+                    "mask": pred.get("mask") or pred.get("encoded_mask") or pred.get("rle"),
+                }
+            )
 
         response_data = {
-            'success': True,
-            'prompt': prompt,
-            'annotated_image': annotated_image_base64,
-            'detections': [
-                {
-                    'class': pred.get('class', prompt),  # Use prompt as class if not provided
-                    'confidence': pred.get('confidence', 1.0),
-                    'x': pred.get('x', 0),
-                    'y': pred.get('y', 0),
-                    'width': pred.get('width', 0),
-                    'height': pred.get('height', 0),
-                    'mask': pred.get('mask')  # Include mask data if available
-                }
-                for pred in all_predictions
-            ],
-            'total_detections': len(all_predictions),
-            'message': message
+            "success": True,
+            "prompt": prompt,
+            "annotated_image": annotated_image_base64,
+            "detections": normalized_detections,
+            "total_detections": len(normalized_detections),
+            "message": f"Found {len(normalized_detections)} '{prompt}' objects" if normalized_detections else f"No '{prompt}' found",
         }
 
-        print(f"✓ Response prepared: {message}")
-        print("="*50 + "\n")
+        print("✓ Response prepared")
         return jsonify(response_data)
 
     except requests.Timeout:
         print("❌ Roboflow API timeout")
-        return jsonify({
-            'error': 'Request timeout',
-            'details': 'The request took too long. Please try again.'
-        }), 504
-        
+        return jsonify({"error": "Request timeout", "details": "The request took too long."}), 504
+
     except requests.RequestException as e:
-        print(f"❌ Network error: {str(e)}")
+        print("❌ Network error:", e)
         traceback.print_exc()
-        return jsonify({
-            'error': 'Network error',
-            'details': str(e)
-        }), 500
+        return jsonify({"error": "Network error", "details": str(e)}), 500
 
     except Exception as e:
-        print(f"❌ Unexpected error: {str(e)}")
+        print("❌ Unexpected error:", e)
         traceback.print_exc()
-        return jsonify({
-            'error': 'Internal server error',
-            'details': str(e)
-        }), 500
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
     finally:
-        # Clean up uploaded file
+        # cleanup
         if uploaded_file_path and os.path.exists(uploaded_file_path):
             try:
                 os.remove(uploaded_file_path)
                 print(f"🗑️  Cleaned up: {uploaded_file_path}")
             except Exception as e:
-                print(f"⚠️  Failed to delete: {e}")
+                print("⚠️  Failed to delete temp file:", e)
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
     print(f"\n{'='*50}")
     print(f"🚀 Starting Finder AI Backend on port {port}")
     print(f"{'='*50}\n")
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(debug=False, host="0.0.0.0", port=port)
