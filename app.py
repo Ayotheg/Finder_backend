@@ -132,9 +132,10 @@ def analyze_image():
         # 5️⃣ Build Roboflow payload (matches SAM3 expected schema)
         payload = {
             "api_key": ROBOFLOW_API_KEY,
-            "input_image": encoded_image,  # use key expected by SAM3 workflow
-            "text_prompt": prompt,         # single string
-            "visualization": "mask",       # request mask visualization
+            "inputs": {
+        "image": encoded_image,       # base64 image
+        "text_prompt": prompt         # string prompt
+        }
         }
 
         print(f"🚀 Sending request to Roboflow workflow: {ROBOFLOW_WORKFLOW_URL}")
