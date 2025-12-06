@@ -38,9 +38,8 @@ RF_KEY = os.getenv("ROBOFLOW_API_KEY")
 RF_WS = os.getenv("ROBOFLOW_WORKSPACE", "the-bunker")
 RF_WFID = os.getenv("ROBOFLOW_WORKFLOW_ID", "sam3-with-prompts")
 
-WORKFLOW_URL = (
-    f"https://serverless.roboflow.com/{RF_WS}/workflows/{RF_WFID}?api_key={RF_KEY}"
-)
+WORKFLOW_URL = f"https://detect.roboflow.com/{RF_WFID}?api_key={RF_KEY}"
+
 
 print("\n============================")
 print("✓ Using Roboflow Workflow URL:")
