@@ -1,8 +1,8 @@
 # finder_backend.py
 import os
 import io
-import json
 import base64
+import traceback
 from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -16,12 +16,11 @@ load_dotenv()
 # ---------------------------
 # Flask setup
 # ---------------------------
-app = Flask(__name__)
+app = Flask(__name__, static_folder="public")
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 UPLOAD_FOLDER = "uploads"
 Path(UPLOAD_FOLDER).mkdir(exist_ok=True)
-
 ALLOWED = {"png", "jpg", "jpeg", "gif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
@@ -38,35 +37,28 @@ RF_KEY = os.getenv("ROBOFLOW_API_KEY")
 RF_WS = os.getenv("ROBOFLOW_WORKSPACE", "the-bunker")
 RF_WFID = os.getenv("ROBOFLOW_WORKFLOW_ID", "sam3-with-prompts")
 
-WORKFLOW_URL = f"https://detect.roboflow.com/{RF_WFID}?api_key={RF_KEY}"
-
+WORKFLOW_URL = f"https://serverless.roboflow.com/{RF_WS}/workflows/{RF_WFID}"
 
 print("\n============================")
-print("✓ Using Roboflow Workflow URL:")
-print(WORKFLOW_URL)
+print("✓ Using Roboflow Workflow URL:", WORKFLOW_URL)
 print("============================\n")
 
 
 # ---------------------------
-# Image compression helper
+# Image compression
 # ---------------------------
 def compress(path, max_dim=1920, quality=85):
     try:
         img = Image.open(path)
         if img.mode == "RGBA":
             img = img.convert("RGB")
-
         if max(img.size) > max_dim:
             scale = max_dim / max(img.size)
-            img = img.resize(
-                (int(img.width * scale), int(img.height * scale)),
-                Image.Resampling.LANCZOS,
-            )
-
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=quality)
-        buffer.seek(0)
-        return buffer.read()
+            img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        buf.seek(0)
+        return buf.read()
     except:
         return open(path, "rb").read()
 
@@ -80,10 +72,11 @@ def health():
 
 
 # ---------------------------
-# MAIN: Analyze route
+# Main analyze route
 # ---------------------------
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
+    uploaded_file_path = None
     try:
         # -----------------------
         # File validation
@@ -101,58 +94,46 @@ def analyze():
         # Prompt handling
         # -----------------------
         prompt = (request.form.get("prompt") or "").strip()
-        if prompt == "":
+        if not prompt:
             prompt = "all objects"
 
-        # workflow requires text_prompt
-        text_prompt = prompt
-
         # -----------------------
-        # Save + Compress
+        # Save + compress
         # -----------------------
         fname = secure_filename(file.filename)
-        path = os.path.join(UPLOAD_FOLDER, fname)
-        file.save(path)
-
-        img_bytes = compress(path)
+        uploaded_file_path = os.path.join(UPLOAD_FOLDER, fname)
+        file.save(uploaded_file_path)
+        img_bytes = compress(uploaded_file_path)
         b64_img = base64.b64encode(img_bytes).decode("utf-8")
 
         # -----------------------
-        # CORRECT SAM 3 PAYLOAD
+        # Roboflow payload
         # -----------------------
         payload = {
             "inputs": {
-                "image": b64_img,         # some workflows use input_image – yours uses image
-                "text_prompt": text_prompt
+                "image": b64_img,
+                "text_prompt": prompt
             }
         }
 
-        print("📤 Sending Payload to Roboflow:")
-        print(json.dumps(payload)[:500], "...\n")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {RF_KEY}"   # ✅ send API key in header
+        }
 
         # -----------------------
         # Call Roboflow
         # -----------------------
-        res = requests.post(
-            WORKFLOW_URL,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=60,
-        )
+        res = requests.post(WORKFLOW_URL, json=payload, headers=headers, timeout=60)
 
         if not res.ok:
-            print("❌ Roboflow error:", res.text)
             return jsonify({
                 "error": "Roboflow request failed",
                 "status": res.status_code,
-                "details": res.json()
-            }), 400
+                "details": res.text
+            }), res.status_code
 
         data = res.json()
-
-        # -----------------------
-        # Extract outputs
-        # -----------------------
         outputs = data.get("outputs", [])
         annotated = None
         detections = []
@@ -161,7 +142,6 @@ def analyze():
             if not isinstance(block, dict):
                 continue
 
-            # mask visualization
             if "mask_visualization" in block:
                 mv = block["mask_visualization"]
                 if isinstance(mv, dict):
@@ -169,7 +149,6 @@ def analyze():
                 if isinstance(mv, str):
                     annotated = mv
 
-            # prediction block
             if "predictions" in block:
                 preds = block["predictions"]
                 if isinstance(preds, list):
@@ -187,12 +166,15 @@ def analyze():
         })
 
     except Exception as e:
-        print("❌ SERVER ERROR:", str(e))
         return jsonify({
             "error": "Server crashed",
             "details": str(e),
             "trace": traceback.format_exc()
         }), 500
+
+    finally:
+        if uploaded_file_path and os.path.exists(uploaded_file_path):
+            os.remove(uploaded_file_path)
 
 
 # ---------------------------
